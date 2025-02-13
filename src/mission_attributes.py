@@ -2,7 +2,7 @@
 # --- Author: C. Feltman ---
 # DESCRIPTION: Place to store the attributes specific to certain rockets
 
-from my_imports import *
+import datetime as dt
 
 class TRICEII:
 
