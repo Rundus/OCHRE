@@ -2,7 +2,9 @@
 # --- Author: C. Feltman ---
 # DESCRIPTION: Place to store the attributes specific to certain rockets
 
-def TRICEII():
+from my_imports import *
+
+class TRICEII:
 
     # --- General Mission Info---
     mission_name = 'TRICEII'
@@ -14,6 +16,8 @@ def TRICEII():
     # --- Launch Conditions ---
     launch_lat_long = [69.294167, 16.020833]  # andoya
     launch_magnetic_inclination = 78.1300  # in deg
+    launch_T0_dt = [dt.datetime(2018,12,8,8,26,00,000000),
+                    dt.datetime(2018,12,8,8,28,00,000000)]
     launch_T0_TT2000 = []  # TT2000 values corresponding to 17:20:00 and 17:21:40 for high/low flyer, respectively.
 
 

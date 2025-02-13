@@ -10,7 +10,8 @@ from spaceToolsLib.setupFuncs.setupSpacepy import setupPYCDF
 from copy import deepcopy
 from glob import glob
 from src.data_paths import DataPaths
-from src.mission_attributes import ACESII
+from src.mission_attributes import TRICEII
+import time
 
 import datetime as dt
 import spaceToolsLib as stl

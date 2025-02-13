@@ -11,18 +11,19 @@ __version__ = "1.0.0"
 
 # --- imports ---
 from glob import glob
-from mission_attributes import TRICEII
 
-# --- --- --- --- --- --- ---
-# --- USER SPECIFIC DATA ---
-# --- --- --- --- --- --- ---
-user = 'cfelt'
-PATH_TO_DATA_FOLDER = r'C:\Data\\'
-HOMEDRIVE = 'C:'
-HOMEPATH = 'C:\\'
+class DataPaths:
 
-# --- --- --- --- --- ---
-# --- TRICE II PATHS ---
-# --- --- --- --- --- ---
-TRICE_data_folder = fr'{PATH_TO_DATA_FOLDER}TRICEII\\'
+    # --- --- --- --- --- --- ---
+    # --- USER SPECIFIC DATA ---
+    # --- --- --- --- --- --- ---
+    user = 'cfelt'
+    PATH_TO_DATA_FOLDER = r'C:\Data\\'
+    HOMEDRIVE = 'C:'
+    HOMEPATH = 'C:\\'
+
+    # --- --- --- --- --- ---
+    # --- TRICE II PATHS ---
+    # --- --- --- --- --- ---
+    TRICE_data_folder = fr'{PATH_TO_DATA_FOLDER}TRICEII\\'
 
