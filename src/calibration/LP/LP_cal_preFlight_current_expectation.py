@@ -7,8 +7,6 @@
 import datetime
 
 import matplotlib.pyplot as plt
-import numpy as np
-
 import iri2020.times as time_profile
 import iri2020.latitude as lat_profile
 import iri2020.altitude as alt_profile
@@ -107,25 +105,73 @@ def LP_cal_preFlight_current_expectation():
         debeye = np.sqrt(stl.ep0 * stl.kB * data_dict_output['Te'][0] / (stl.q0 * stl.q0 * density))
 
 
+    # --- Calculate the expected current ---
+    ## 2. constants
+    probe_radius = 0.0127  # meters
+    A = 4 * np.pi * (probe_radius ** 2)
+
+    kB = 1.380649e-23  # J/K
+    qe = 1.602176634e-19  # C
+
+    ion_names = ["O+", "H+", "N+", "He+", "O2+", "NO+"]
+    masses = np.array([[stl.ion_dict[name]] for name in ion_names])
+    densities = np.array([data_dict_output[f'n{key}'][0] for key in ion_names])
+
+    me = 9.10938356e-31  # kg
+    # weighted average for mass
+    mi_avg = np.sum(masses * densities, axis=0) / np.sum(densities, axis=0)
+    mi_av_norm = mi_avg / stl.ion_dict['proton']
+
+    density_multiplier = 3
+    Ti_multiplier = 3
+
+    ni = np.sum(densities, axis=0)*density_multiplier
+    ne = data_dict_output["ne"][0]*density_multiplier
+
+    Ti = data_dict_output["Ti"][0]*Ti_multiplier
+    Te = data_dict_output["Te"][0]
+    phi_dif_ion = 7
+    phi_dif_elec = 1
+
+    # 4. CALCULATE CURRENTS
+    I_e = (ne * qe * A * np.sqrt(kB * Te / (2 * np.pi * me))) / (1E-6)
+    I_i = (ni * qe * A * np.sqrt(kB * Ti / (2 * np.pi * mi_avg))) / (1E-6)
+    I_e_est = I_e * (1 + ((qe * (phi_dif_elec))) / (kB * Te))
+    I_i_est = I_i * (1 + ((qe * (phi_dif_ion))) / (kB * Ti))
+
     # --- PLOT THE DATA ---
+    fig, ax = plt.subplots(2,2)
+    fig.set_figwidth(15)
+    fig.set_figheight(15)
+    ax[0, 0].plot(data_dict_output['Te'][0], data_dict_output['alt_km'][0][0], label='Te')
+    ax[0, 0].plot(data_dict_output['Ti'][0], data_dict_output['alt_km'][0][0], label='Ti')
+    ax[0, 0].legend()
+    ax[0, 0].text(0.25, 0.9, s=f'T$_i$ multiplier (x{Ti_multiplier})', color='black', transform=ax[0, 0].transAxes, fontsize=20)
+    ax[0, 0].set_xlabel('Temperature [K]')
+    ax[0, 0].set_ylabel('Altitude [km]')
 
-    fig, ax = plt.subplots(3,1)
-    ax[0].plot(data_dict_output['Te'][0], data_dict_output['alt_km'][0][0], label='Te')
-    ax[0].plot(data_dict_output['Ti'][0], data_dict_output['alt_km'][0][0], label='Ti')
-    ax[0].legend()
-    ax[0].set_xlabel('Temperature [K]')
-    ax[0].set_xlabel('Altitude [km]')
+    ax[0, 1].plot(data_dict_output['ne'][0]/(stl.cm_to_m**3), data_dict_output['alt_km'][0][0], label='ne')
+    ax[0, 1].plot(density/(stl.cm_to_m**3), data_dict_output['alt_km'][0][0], label='ni')
+    ax[0, 1].legend()
+    ax[0, 1].set_xlabel('Density [cm^-3]')
+    ax[0,1].set_xscale('log')
+    ax[0,1].text(0.25, 0.9, s=f'n$_e$ multiplier (x{density_multiplier})', color='black', transform=ax[0,1].transAxes, fontsize=20)
+    ax[0, 1].set_ylabel('Altitude [km]')
 
-    ax[1].plot(data_dict_output['ne'][0], data_dict_output['alt_km'][0][0], label='ne')
-    ax[1].plot(density, data_dict_output['alt_km'][0][0], label='ni')
-    ax[1].legend()
-    ax[1].set_xlabel('Density [cm^-3]')
-    ax[1].set_xlabel('Altitude [km]')
+    ax[1, 0].plot(debeye * stl.cm_to_m, data_dict_output['alt_km'][0][0])
+    ax[1, 0].axvline(x=2.54, color='red',linestyle='--')
+    ax[1, 0].set_ylabel('Altitude [km]')
+    ax[1, 0].set_xlabel('Debeye Length [cm]')
 
-    ax[2].plot(debeye * stl.cm_to_m, data_dict_output['alt_km'][0][0])
-    ax[2].axvline(x=2.54, color='red',linestyle='--')
-    ax[2].set_ylabel('Altitude [km]')
-    ax[2].set_xlabel('Debeye Length [cm]')
+    ax[1, 1].plot(I_e_est, data_dict_output['alt_km'][0][0],label='I$_{th,e}$')
+    ax[1, 1].plot(I_i_est, data_dict_output['alt_km'][0][0], label='I$_{th,i}$')
+    ax[1, 1].set_ylabel('Altitude [km]')
+    ax[1, 1].set_xlabel('Current [uA]')
+    ax[1, 1].set_xscale('log')
+    ax[1, 1].text(0.5, 0.9, s='I$_{max}$$^{i}$='+f'{round(max(I_i_est),1)} uA', color='red', transform=ax[1, 1].transAxes, fontsize=20)
+    ax[1, 1].text(0.5, 0.7, s='I$_{max}$$^{e}$=' + f'{round(max(I_e_est), 1)} uA', color='black',transform=ax[1, 1].transAxes, fontsize=20)
+
+    plt.tight_layout()
     plt.show()
 
 

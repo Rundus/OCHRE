@@ -83,12 +83,12 @@ class SweepTable:
     N_steps = 49
     step_numbers = np.array([i + 1 for i in range(N_steps)])
     DAC_bitDepth = 12
-    DAC_Vref = 3.57  # in Volts
+    DAC_Vref = 3.6  # in Volts
     feedback_gain_ratio = 500  # 500:1 for OCHRE, 1000:1 for ACES-II
 
     # --- DAC-code sweep parameters (for construct_sweep_table_from_DAC_codes) ---
-    N_linear_DAC = 10  # number of steps, at the low-DAC-code end, generated linearly rather than exponentially
-    DAC_start = 3379  # highest DAC code in the sweep (upper bound)
+    N_linear_DAC = 0  # number of steps, at the low-DAC-code end, generated linearly rather than exponentially
+    DAC_start = 3000  # highest DAC code in the sweep (upper bound)
     DAC_stop = 2  # lowest DAC code in the sweep (lower bound)
     DAC_transition =10  # DAC code marking the upper limit of the linear region / boundary between the exponential and linear portions
 
@@ -198,7 +198,7 @@ class SweepTable:
 
         return sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors
 
-    def construct_sweep_table_from_Emax(self):
+    def construct_sweep_table_from_Energy(self):
         """
         Construct a sweep table by stepping down geometrically from Emax.
 
@@ -372,7 +372,10 @@ class SweepTable:
             self.plot_sweep(*table, sweep_type)
 
         if print_bool:
-            resolution = -1*np.diff(table[3], append=table[3][-1]) / (table[3])
+            diffs = -1*np.diff(table[3])
+            denomenator = (table[3][0:-1] + table[3][1:])/2
+            resolution =  diffs/ denomenator
+            resolution += [resolution[-1]]
             rows = list(zip(table[0], table[1], table[2], table[3],resolution))
             print(tabulate(rows, headers=["Step No.", "DAC Code (x2 cal)", "Hemisphere Volt [V]", "Energy [eV]",'Resolution'], floatfmt=".3f"))
 
