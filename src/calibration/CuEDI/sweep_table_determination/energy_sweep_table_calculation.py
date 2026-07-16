@@ -1,3 +1,20 @@
+"""
+sweep_table.py
+
+Builds hemisphere-analyzer sweep tables (step number -> DAC code -> hemisphere
+voltage -> pass energy) for an electrostatic analyzer instrument.
+
+A "sweep table" can be constructed three ways:
+    - 'Emax'    : derive DAC codes/voltages from a target max energy and the
+                  instrument's energy resolution (DeltaE).
+    - 'DAC'     : derive voltages/energies by starting from a specified range
+                  of DAC codes (partially exponential, partially linear).
+    - 'TRACERS' : a fixed, hardcoded sweep table used for the TRACERS mission.
+
+Use SweepTable().construct_sweep_table(type=..., plot_sweep=..., print_sweep=...)
+as the single entry point; it dispatches to the appropriate constructor below.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -6,35 +23,125 @@ import spaceToolsLib as stl
 
 
 class SweepTable:
+    """
+    Computes and (optionally) plots/prints the energy sweep table for an
+    electrostatic hemispherical analyzer.
+
+    The instrument sweeps the inner hemisphere voltage across N_steps values.
+    Each step corresponds to:
+        - a DAC code (12-bit, 0 to 2^DAC_bitDepth - 1) sent to the high-voltage
+          supply,
+        - a hemisphere voltage (DAC code scaled by DAC_Vref and the feedback
+          gain ratio of the HV supply),
+        - a pass/permitted energy (a function of hemisphere voltage and the
+          analyzer's geometric constants Delta_r and rout).
+
+    Class attributes
+    ----------------
+    DeltaE : float
+        Fractional (FWHM) energy resolution of the analyzer, e.g. 0.18 = 18%.
+        Used both to step the energy sweep geometrically (construct_sweep_table_from_Emax)
+        and to report +/- energy uncertainty on every sweep table.
+    Delta_r : float
+        Inner-to-outer hemisphere radius spacing, in inches.
+    rout : float
+        Outer hemisphere radius (diameter, per original comment), in inches.
+    Emax : float
+        Target maximum pass energy, in eV, used as the starting point for the
+        'Emax'-based sweep.
+    N_steps : int
+        Number of steps in the sweep (table length).
+    step_numbers : np.ndarray
+        1-indexed array [1, 2, ..., N_steps] used as the step-number axis for
+        all sweep tables.
+    DAC_bitDepth : int
+        Bit depth of the DAC driving the HV supply (defines valid code range
+        0 to 2**DAC_bitDepth - 1).
+    DAC_Vref : float
+        DAC reference voltage, in Volts.
+    feedback_gain_ratio : float
+        Gain ratio of the HV supply's feedback network (DAC output volts :
+        actual hemisphere volts), e.g. 500 for OCHRE, 1000 for ACES-II.
+    N_linear_DAC : int
+        Number of steps, at the low-DAC-code (bottom) end of the DAC-code
+        sweep, that are spaced linearly rather than exponentially. The
+        remaining (N_steps - N_linear_DAC) steps at the high-code end are
+        spaced geometrically. Used only by construct_sweep_table_from_DAC_codes.
+    DAC_start : int
+        Highest DAC code in the DAC-code sweep (upper bound, first step).
+    DAC_stop : int
+        Lowest DAC code in the DAC-code sweep (lower bound, last step).
+    """
 
     # --- Instrument parameters ---
     DeltaE = 0.18  # in decimal percent. This is the FWHM value
     Delta_r = 0.055  # [Inches] inner radius spacing between hemispheres
     rout = 0.945  # [Inches] the diameter of the outer hemisphere
 
-    # --- Emax ---
+    # --- Emax Sweep Toggles---
     Emax = 11000  # in [eV]
     N_steps = 49
     step_numbers = np.array([i + 1 for i in range(N_steps)])
     DAC_bitDepth = 12
-    DAC_Vref = 3.6  # in Volts
+    DAC_Vref = 3.57  # in Volts
     feedback_gain_ratio = 500  # 500:1 for OCHRE, 1000:1 for ACES-II
 
     # --- DAC-code sweep parameters (for construct_sweep_table_from_DAC_codes) ---
-    N_linear_DAC = 0  # number of steps, at the low-DAC-code end, generated linearly rather than exponentially
+    N_linear_DAC = 10  # number of steps, at the low-DAC-code end, generated linearly rather than exponentially
     DAC_start = 3379  # highest DAC code in the sweep (upper bound)
     DAC_stop = 2  # lowest DAC code in the sweep (lower bound)
-
+    DAC_transition =10  # DAC code marking the upper limit of the linear region / boundary between the exponential and linear portions
 
     # ------------------------------------------------------------------
     # DAC-code-based sweep construction
     # ------------------------------------------------------------------
     def construct_sweep_table_from_DAC_codes(self, **kwargs):
         """
-        Construct a descending sweep of N_steps DAC codes between DAC_start (high)
-        and DAC_stop (low). The upper (N_steps - N_linear_DAC) steps are spaced
-        exponentially/geometrically; the lower N_linear_DAC steps are spaced linearly
-        down to DAC_stop.
+        Construct a descending sweep of N_steps DAC codes between DAC_start
+        (high) and DAC_stop (low), then back-calculate the corresponding
+        hemisphere voltages and pass energies.
+
+        The upper (N_steps - N_linear_DAC) steps are spaced exponentially
+        (geometrically) from DAC_start down to an intermediate transition
+        code; the lower N_linear_DAC steps are spaced linearly from that
+        transition code down to DAC_stop. Setting N_linear_DAC = 0 makes the
+        whole sweep exponential; setting N_linear_DAC = N_steps makes the
+        whole sweep linear.
+
+        Voltages are recovered by inverting digitize(): DAC_code -> Volts,
+        then rescaling by feedback_gain_ratio to get the actual hemisphere
+        voltage (undoing the gain division applied when a voltage is
+        converted to a DAC code elsewhere in this class).
+
+        Energies are recovered by inverting Vset(): Volts -> eV.
+
+        Parameters
+        ----------
+        **kwargs :
+            show_sweep_values : bool, optional (default False)
+                If True, print a formatted table of step number, DAC code,
+                hemisphere voltage, and energy.
+
+        Returns
+        -------
+        sweep_steps : np.ndarray
+            1-indexed step numbers, length N_steps.
+        sweep_DAC_codes : np.ndarray of int
+            DAC codes for each step, descending from DAC_start to DAC_stop.
+        sweep_voltages : np.ndarray
+            Hemisphere voltage [V] for each step.
+        sweep_energies : np.ndarray
+            Pass energy [eV] for each step.
+        sweep_errors : np.ndarray, shape (2, N_steps)
+            [negative_error, positive_error] on energy, each equal to
+            energy * (DeltaE / 2), matching the convention used elsewhere
+            in this class.
+
+        Raises
+        ------
+        ValueError
+            If DAC_start/DAC_stop fall outside the valid DAC code range or
+            DAC_start <= DAC_stop, or if N_linear_DAC is outside [0, N_steps].
         """
         code_max = 2 ** self.DAC_bitDepth - 1
         code_min = 0
@@ -46,11 +153,16 @@ class SweepTable:
                 f"{code_min} <= DAC_stop < DAC_start <= {code_max}"
             )
 
-
         if not (0 <= self.N_linear_DAC <= self.N_steps):
             raise ValueError("N_linear_DAC must be between 0 and N_steps")
 
         N_exp = self.N_steps - self.N_linear_DAC
+
+        if not (self.DAC_stop <= self.DAC_transition <= self.DAC_start):
+            raise ValueError(
+                f"DAC_transition ({self.DAC_transition}) must satisfy "
+                f"DAC_stop ({self.DAC_stop}) <= DAC_transition <= DAC_start ({self.DAC_start})"
+            )
 
         if self.N_linear_DAC == 0:
             # entire sweep is exponential
@@ -59,9 +171,10 @@ class SweepTable:
             # entire sweep is linear
             sweep_DAC_codes = np.linspace(self.DAC_start, self.DAC_stop, self.N_steps)
         else:
-            # find the transition code that splits the sweep into N_exp exponential
+            # transition_code is the explicitly-specified upper bound of the linear
+            # region (DAC_transition), splitting the sweep into N_exp exponential
             # steps followed by N_linear_DAC linear steps
-            transition_code = np.geomspace(self.DAC_start, self.DAC_stop, N_exp + 1)[-1]
+            transition_code = self.DAC_transition
             exp_codes = np.geomspace(self.DAC_start, transition_code, N_exp, endpoint=False)
             linear_codes = np.linspace(transition_code, self.DAC_stop, self.N_linear_DAC)
             sweep_DAC_codes = np.concatenate([exp_codes, linear_codes])
@@ -74,21 +187,44 @@ class SweepTable:
         sweep_voltages = (sweep_DAC_codes / DAC_per_volt) * self.feedback_gain_ratio
 
         # --- invert Vset() to recover energies ---
-        sweep_energies = sweep_voltages * (self.rout / self.Delta_r + 3 / 2) / 2
+        # sweep_energies = sweep_voltages * (self.rout / self.Delta_r + 3 / 2) / 2
+        sweep_energies = sweep_voltages * (self.rout / self.Delta_r ) / 2
 
         # --- errors, same convention as construct_sweep_table_from_Emax ---
         energy_err_neg = sweep_energies * (self.DeltaE / 2)
         energy_err_pos = sweep_energies * (self.DeltaE / 2)
         sweep_errors = np.array([energy_err_neg, energy_err_pos])
 
-        if kwargs.get('show_sweep_values', False):
-            rows = list(zip(sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies))
-            print(
-                tabulate(rows, headers=["Step No.", "DAC Code", "Hemisphere Volt [V]", "Energy [eV]"], floatfmt=".6f"))
 
         return sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors
 
     def construct_sweep_table_from_Emax(self):
+        """
+        Construct a sweep table by stepping down geometrically from Emax.
+
+        Starting at Emax, each subsequent step's energy is scaled by
+        (1 - DeltaE/2) / (1 + DeltaE/2), which produces steps spaced so that
+        adjacent energy windows (each energy +/- DeltaE/2 of itself) just
+        touch -- i.e. a resolution-matched geometric energy sweep with
+        N_steps points.
+
+        DAC codes and voltages are then derived forward from these energies
+        via Vset() and digitize().
+
+        Returns
+        -------
+        sweep_steps : np.ndarray
+            1-indexed step numbers, length N_steps.
+        sweep_DAC_codes : np.ndarray
+            DAC codes for each step (rounded, not cast to int).
+        sweep_voltages : np.ndarray
+            Hemisphere voltage [V] for each step.
+        sweep_energies : np.ndarray
+            Pass energy [eV] for each step, geometrically descending from Emax.
+        sweep_errors : np.ndarray, shape (2, N_steps)
+            [negative_error, positive_error] on energy, each equal to
+            energy * (DeltaE / 2).
+        """
         sweep_energies = []
 
         previous = self.Emax
@@ -114,10 +250,34 @@ class SweepTable:
         sweep_DAC_codes = np.round(self.digitize(sweep_voltages / self.feedback_gain_ratio))
         sweep_steps = self.step_numbers
 
-
         return sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors
 
     def construct_TRACERS_sweep_table(self):
+        """
+        Return the fixed, hardcoded 50-point sweep table used for the
+        TRACERS mission (not derived from Emax or DAC_start/DAC_stop).
+
+        Note the final energy value is None (no corresponding measured/
+        calculated energy for that step) and sweep_steps/sweep_DAC_codes
+        etc. are length 50, one longer than N_steps (49), since this table
+        is independent of the class's general N_steps parameter.
+
+        Returns
+        -------
+        sweep_steps : list of int
+            Step numbers (length 50; note step 49 appears twice in the
+            source data).
+        sweep_DAC_codes : list of int
+            DAC codes for each step.
+        sweep_voltages : list of float
+            Hemisphere voltage [V] for each step.
+        sweep_energies : np.ndarray
+            Pass energy [eV] for each step; last element is None.
+        sweep_errors : np.ndarray, shape (2, 50)
+            [negative_error, positive_error] on energy, each equal to
+            energy * (DeltaE_TRACERS / 2). Note: since the last energy is
+            None, the last error entries will be None/NaN-like as well.
+        """
         sweep_steps = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
                        21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
                        39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 49, 50]
@@ -165,54 +325,166 @@ class SweepTable:
         return sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors
 
     def construct_sweep_table(self, **kwargs):
+        """
+        Single entry point for building a sweep table. Dispatches to one of
+        the three constructors below based on `type`, and optionally plots
+        and/or prints the result.
+
+        Parameters
+        ----------
+        **kwargs :
+            type : str
+                Which sweep to build. One of 'TRACERS', 'DAC', 'Emax'.
+                Required; raises ValueError if missing or invalid.
+            plot_sweep : bool, optional (default False)
+                If True, call plot_sweep() on the resulting table.
+            print_sweep : bool, optional (default False)
+                If True, print a formatted table of step number, DAC code,
+                voltage, and energy.
+
+        Returns
+        -------
+        table : tuple
+            (sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies,
+            sweep_errors) as returned by the selected constructor.
+
+        Raises
+        ------
+        ValueError
+            If `type` is not one of 'TRACERS', 'DAC', 'Emax'.
+        """
 
         plot_bool = kwargs.get('plot_sweep', False)
-        print_bool = kwargs.get('print_sweep',False)
+        print_bool = kwargs.get('print_sweep', False)
         sweep_type = kwargs.get('type', [])  # Valid Values ['TRACERS','DAC','Emax']
+        csv_path = kwargs.get('to_csv', None)
 
         if sweep_type == 'TRACERS':
             table = self.construct_TRACERS_sweep_table()
-        elif sweep_type=='DAC':
+        elif sweep_type == 'DAC':
             table = self.construct_sweep_table_from_DAC_codes()
-        elif sweep_type=='Emax':
+        elif sweep_type == 'Emax':
             table = self.construct_sweep_table_from_Emax()
         else:
             raise ValueError("Invalid Sweep Type")
 
         if plot_bool:
-            self.plot_sweep(*table,sweep_type)
+            self.plot_sweep(*table, sweep_type)
 
         if print_bool:
-            rows = list(zip(table[0], table[1], table[2], table[3]))
-            print(tabulate(rows, headers=["Step No.", "DAC Code (x2 cal)", "Hemisphere Volt [V]", "Energy [eV]"],floatfmt=".6f"))
+            resolution = -1*np.diff(table[3], append=table[3][-1]) / (table[3])
+            rows = list(zip(table[0], table[1], table[2], table[3],resolution))
+            print(tabulate(rows, headers=["Step No.", "DAC Code (x2 cal)", "Hemisphere Volt [V]", "Energy [eV]",'Resolution'], floatfmt=".3f"))
+
+        if csv_path:
+            sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors = table
+            df = pd.DataFrame({
+                "Step No.": sweep_steps,
+                "DAC Code": sweep_DAC_codes,
+                "Hemisphere Volt [V]": sweep_voltages,
+                "Energy [eV]": sweep_energies,
+                "Energy Err Neg [eV]": sweep_errors[0],
+                "Energy Err Pos [eV]": sweep_errors[1],
+            })
+            df.to_csv(csv_path, index=False)
 
         return table
 
-    # Define the energy permitted into the detector based on the input voltage
     def Epermitted(self, Vset, charge):
         """
-        :param Vset:
-        :param charge:
-        :return:
-            permitted energy in Joules
+        Compute the pass ("permitted") energy admitted into the detector for
+        a given hemisphere voltage and particle charge.
+
+        This is the forward physical relation (voltage/charge -> energy in
+        Joules); note it is the inverse direction and different unit
+        convention from Vset(), which works in eV.
+
+        Parameters
+        ----------
+        Vset : float or np.ndarray
+            Hemisphere voltage [V].
+        charge : float
+            Particle charge (e.g. in Coulombs; sign matters -- determines
+            the sign of the returned energy).
+
+        Returns
+        -------
+        float or np.ndarray
+            Permitted energy, in Joules.
         """
-        return (-1 * charge * Vset / 2) * (self.rout / self.Delta_r + 3 / 2)
+        # return (-1 * charge * Vset / 2) * (self.rout / self.Delta_r + 3 / 2)
+
+        return (-1 * charge * Vset / 2) * (self.rout / self.Delta_r )
 
     def Vset(self, Epermitted):
         """
-        :param Epermitted: Input Energy, IN EV (already accounted for J-> eV Conversion)
-        :return:
-            Voltage in [V]
+        Compute the hemisphere voltage required to admit a given pass energy.
+
+        Inverse of the eV-based energy/voltage relation used throughout this
+        class (i.e. the forward direction used by construct_sweep_table_from_Emax,
+        and the relation inverted by construct_sweep_table_from_DAC_codes).
+
+        Parameters
+        ----------
+        Epermitted : float or np.ndarray
+            Desired pass energy, in eV.
+
+        Returns
+        -------
+        float or np.ndarray
+            Required hemisphere voltage, in Volts.
         """
         return (2 * Epermitted) / (self.rout / self.Delta_r + 3 / 2)
 
     def digitize(self, Voltage):
+        """
+        Convert a voltage into the corresponding DAC code for this
+        instrument's DAC (DAC_bitDepth bits, referenced to DAC_Vref).
+
+        Parameters
+        ----------
+        Voltage : float or np.ndarray
+            Voltage to digitize, in Volts (already scaled to the DAC's
+            input range, i.e. hemisphere voltage / feedback_gain_ratio).
+
+        Returns
+        -------
+        float or np.ndarray
+            DAC code (not rounded/cast to int here; callers typically
+            apply np.round()).
+        """
         code_max = 2 ** (self.DAC_bitDepth) - 1
         code_min = 0
         DAC_per_volt = ((code_max - code_min) / (self.DAC_Vref - 0))
         return Voltage * DAC_per_volt
 
-    def plot_sweep(self, sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors,type_name):
+    def plot_sweep(self, sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors, type_name):
+        """
+        Plot a sweep table as three stacked scatter plots (energy with error
+        bars, hemisphere voltage, DAC code) all sharing a step-number x-axis.
+
+        Parameters
+        ----------
+        sweep_steps : array-like
+            Step numbers (x-axis for all three subplots).
+        sweep_DAC_codes : array-like
+            DAC code per step (bottom subplot).
+        sweep_voltages : array-like
+            Hemisphere voltage [V] per step (middle subplot).
+        sweep_energies : array-like
+            Pass energy [eV] per step (top subplot).
+        sweep_errors : array-like, shape (2, N)
+            [negative_error, positive_error] on energy, used for error bars
+            on the top subplot.
+        type_name : str
+            Label identifying which sweep type this is (e.g. 'DAC', 'Emax',
+            'TRACERS'); used in the figure title.
+
+        Returns
+        -------
+        None
+            Displays the plot via plt.show(); does not return a value.
+        """
 
         # plot everything
         fig, ax = plt.subplots(3, sharex=True)
@@ -250,6 +522,8 @@ class SweepTable:
 # Based on a Maximum Energy and detector resolution, calculate the energies and voltages needed
 # for the sweep
 
-sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors = SweepTable().construct_sweep_table(type='DAC',
-                                                                                                                plot_sweep=False,
-                                                                                                                print_sweep=True)
+sweep_steps, sweep_DAC_codes, sweep_voltages, sweep_energies, sweep_errors = SweepTable().construct_sweep_table(
+    type='DAC',
+    plot_sweep=False,
+    print_sweep=True,
+    to_csv='/home/connor/PycharmProjects/OCHRE/src/calibration/CuEDI/sweep_table_determination/sweep_table.csv')
