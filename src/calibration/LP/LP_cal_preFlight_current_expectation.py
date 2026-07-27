@@ -122,8 +122,8 @@ def LP_cal_preFlight_current_expectation():
     mi_avg = np.sum(masses * densities, axis=0) / np.sum(densities, axis=0)
     mi_av_norm = mi_avg / stl.ion_dict['proton']
 
-    density_multiplier = 3
-    Ti_multiplier = 3
+    density_multiplier = 1
+    Ti_multiplier = 1
 
     ni = np.sum(densities, axis=0)*density_multiplier
     ne = data_dict_output["ne"][0]*density_multiplier

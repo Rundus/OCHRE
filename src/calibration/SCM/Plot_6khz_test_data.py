@@ -56,7 +56,8 @@ simGain = [thing['magnitude_dB'] for thing in data]
 ###########################
 # Directory containing CSV files
 # data_dir = r"/home/connor/Data/ROCKETS/OCHRE/calibration/SCM/SCM_test_data_post_6khz_knee"
-data_dir = r"/home/connor/Data/ROCKETS/OCHRE/calibration/SCM/SCM_test_data_cal1_linear_output"
+# data_dir = r"/home/connor/Data/ROCKETS/OCHRE/calibration/SCM/SCM_test_data_cal1_linear_output"
+data_dir = r"/home/connor/Data/ROCKETS/OCHRE/calibration/SCM/SCM_test_data_post_conformal/"
 
 # Find all CSV files matching *_sgain.csv
 csv_files = glob.glob(os.path.join(data_dir, "*_sgain.csv"))
