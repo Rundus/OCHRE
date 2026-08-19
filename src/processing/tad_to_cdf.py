@@ -46,6 +46,28 @@ USAGE
 import struct
 import numpy as np
 import pandas as pd
+import spaceToolsLib as stl
+import time
+start_time = time.time()
+
+
+
+# --- Pathing ---------------------------------------------------------------
+DIR = 'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/tad/'
+SOURCE = 'simulator/'
+# FILE = '52012_Full_Turn_On_8-15-26_Card1.tad'
+FILE = '20260814_00_OCHRE_CuEDI_debug.tad'
+TAD_PATH = DIR + SOURCE+ FILE
+
+# --- Datastream timing constants -------------------------------------------
+# TODO: set these to the real values for this datastream. They control how
+# each individual data word within a minor frame gets its own timestamp,
+# offset from the minor frame header's decoded time (see
+# `word_time_offset_sec` / `extract_instrument_stream` below).
+BIT_RATE_BPS = 4_000_000     # datastream bit rate, in bits per second
+WORD_BIT_SIZE_BITS = 16      # bits per data word (matches the 16-bit word
+                              # split used throughout this parser)
+TIME_PER_WORD_SEC = WORD_BIT_SIZE_BITS / BIT_RATE_BPS
 
 FILE_HEADER_LEN = 328
 MINOR_FRAME_HEADER_LEN = 12
@@ -53,15 +75,20 @@ SYNC_LEN = 4
 DEFAULT_SYNC_WORD = bytes.fromhex("40286bfe")  # little-endian for 0xFE6B2840
 DEFAULT_YEAR = 2026
 
-# --- Datastream timing constants -------------------------------------------
-# TODO: set these to the real values for this datastream. They control how
-# each individual data word within a minor frame gets its own timestamp,
-# offset from the minor frame header's decoded time (see
-# `word_time_offset_sec` / `extract_instrument_stream` below).
-BIT_RATE_BPS = 1_000_000     # datastream bit rate, in bits per second
-WORD_BIT_SIZE_BITS = 16      # bits per data word (matches the 16-bit word
-                              # split used throughout this parser)
-TIME_PER_WORD_SEC = WORD_BIT_SIZE_BITS / BIT_RATE_BPS
+# --- Datastream Instrument Word Definitions --------------------------------
+instr_dict = {
+    'CuEDI':{'rows':None,'cols':[10,11,21,22,36,37,52,53,54,70,71,81,82,96,97,112,113]},
+    # 'LP':{'rows':None,'cols':[6,7,19,20,34,35,50,51,66,67,79,80,94,95,110,111]},
+    # 'SCM':{'rows':None,'cols':np.array([1,2,3,
+    #                                     16,17,18,
+    #                                     31,32,33,
+    #                                     46,47,48,
+    #                                     61,62,63,
+    #                                     76,77,78,
+    #                                     91,92,93,
+    #                                     106,107,108])},
+    # 'SFID':{'rows':None,'cols':np.array([1,16,31,46,61,76,91,106])}
+}
 
 
 def detect_record_length(data: bytes, sync_word: bytes,
@@ -397,14 +424,45 @@ def build_major_frame_timestamps(df: pd.DataFrame,
 def word_time_offset_sec(col: int) -> float:
     """
     Seconds after a minor frame's header timestamp that word `col` (0-indexed
-    within the 120-word data block) actually occurs in the bitstream.
-
-    The header timestamp marks the sampling of the first bit of the frame
-    sync pattern, which is word 0 of the data block (see module docstring --
-    the sync pattern IS data word[0:2]). So word 0 occurs at offset 0, and
-    each subsequent word occurs TIME_PER_WORD_SEC later.
+    within the 120-word data block) would occur, ASSUMING a fixed word rate
+    derived from BIT_RATE_BPS. Kept for reference/fallback use, but
+    extract_instrument_stream() no longer uses this directly -- see
+    compute_row_periods_sec() below for why.
     """
     return col * TIME_PER_WORD_SEC
+
+
+def compute_row_periods_sec(major_frame_timestamps: np.ndarray) -> np.ndarray:
+    """
+    For each (major_frame, row) minor frame, compute the REAL observed
+    duration until the next minor frame's header timestamp -- using the
+    actual decoded timestamps rather than an assumed constant bit rate.
+
+    Why this matters: real hardware timing has jitter (clock jitter, and
+    +/-1us quantization from the microsecond-only BCD timestamp
+    resolution). If word-level offsets within a row are computed from a
+    fixed nominal period (col * TIME_PER_WORD_SEC), a late-column word's
+    synthetic offset can exceed the row's REAL duration whenever jitter
+    makes that particular gap shorter than nominal -- causing its
+    timestamp to land after the next row's real start time ("temporal
+    overlap"). Scaling each word's offset to that row's own real duration
+    instead makes this impossible by construction: the last word's offset
+    is always strictly less than the real gap to the next row.
+
+    Returns
+    -------
+    np.ndarray, same shape as major_frame_timestamps (N, minor_frames_per_major_frame),
+    dtype float64, seconds until the NEXT minor frame in the real
+    chronological sequence (wrapping across major-frame boundaries). The
+    very last entry in the whole array (which has no "next" frame) reuses
+    the previous gap as an estimate.
+    """
+    flat = major_frame_timestamps.reshape(-1)
+    diffs = np.diff(flat) / np.timedelta64(1, "s")
+    periods = np.empty(flat.shape[0], dtype=np.float64)
+    periods[:-1] = diffs
+    periods[-1] = diffs[-1] if len(diffs) > 0 else (120 * TIME_PER_WORD_SEC)
+    return periods.reshape(major_frame_timestamps.shape)
 
 
 def extract_instrument_stream(major_frames: np.ndarray,
@@ -413,6 +471,13 @@ def extract_instrument_stream(major_frames: np.ndarray,
     """
     Pull a subcommutated instrument's samples out of major_frames and give
     each sample its own precisely computed timestamp.
+
+    Word-level timestamps are computed as a FRACTION of each row's REAL
+    observed duration (col / words_per_minor_frame * real_row_period), not
+    a fixed nominal word period -- see compute_row_periods_sec() for why.
+    This guarantees a word can never be timestamped past its own row's
+    real time window, avoiding overlap with the next minor frame even in
+    the presence of timing jitter.
 
     In OCHRE, instrument identity is fixed by COLUMN alone: whatever
     instrument lives at column c within a minor frame lives there in every
@@ -455,6 +520,8 @@ def extract_instrument_stream(major_frames: np.ndarray,
             "two dimensions -- make sure both came from the same df."
         )
 
+    row_periods = compute_row_periods_sec(major_frame_timestamps)  # (N, rows_per_major)
+
     columns = [column] if isinstance(column, int) else list(column)
 
     if rows is None:
@@ -471,14 +538,16 @@ def extract_instrument_stream(major_frames: np.ndarray,
     for col, valid_rows in zip(columns, row_sets):
         if not (0 <= col < cols):
             raise ValueError(f"column {col} out of range 0-{cols - 1}")
-        offset = pd.to_timedelta(word_time_offset_sec(col), unit="s")
+        frac = col / cols  # fraction of the row's real duration
 
         for row in valid_rows:
             if not (0 <= row < rows_per_major):
                 raise ValueError(f"row {row} out of range 0-{rows_per_major - 1}")
 
-            values = major_frames[:, row, col]           # (N,)
-            base_times = major_frame_timestamps[:, row]  # (N,) datetime64
+            values = major_frames[:, row, col]            # (N,)
+            base_times = major_frame_timestamps[:, row]   # (N,) datetime64
+            offset_sec = frac * row_periods[:, row]        # (N,) -- real, per-row
+            offset = pd.to_timedelta(offset_sec, unit="s")
             times = base_times + offset
 
             frames.append(pd.DataFrame({
@@ -497,15 +566,17 @@ def extract_instrument_stream(major_frames: np.ndarray,
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
-        print("Usage: python tad_parser.py <path_to_tad_file> [year]")
-        sys.exit(1)
-
-    tad_path = sys.argv[1]
+    tad_path = TAD_PATH
     yr = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_YEAR
 
-    df = parse_tad_file(tad_path, year=yr)
+    df = parse_tad_file(tad_path, year=yr) # run the main function to get the data
+    major_frames = build_major_frames(df)
+    major_frame_ts = build_major_frame_timestamps(df)  # (N, 10) array, aligned
+                                                         # with major_frames --
+                                                         # NOT the same as
+                                                         # df['timestamp']
 
+    # print out some status words
     print(f"\nParsed {len(df)} minor frames from {tad_path}")
     print(f"Record length: {df.attrs['rec_len']} bytes  "
           f"| Data words/frame: {df.attrs['n_data_words16']}  "
@@ -514,7 +585,34 @@ if __name__ == "__main__":
           f"{df.attrs['header_date_str_raw']!r}")
     print(f"Sync errors: {(~df['sync_ok']).sum()} / {len(df)}")
     print(f"Time range: {df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}")
-    print(df.drop(columns=["data"]).head())
-
-    major_frames = build_major_frames(df)
+    # print(df.drop(columns=["data"]).head())
     print(f"\nMajor frames array shape: {major_frames.shape}  dtype={major_frames.dtype}")
+
+    # --- Rip out individual instrument data ---
+    for instr,words_dict in instr_dict.items():
+
+        stl.prgMsg(f'Extracting {instr} data')
+
+        data = extract_instrument_stream(major_frames=major_frames,
+                                  major_frame_timestamps=major_frame_ts,
+                                  rows=words_dict['rows'],
+                                  column=np.array(words_dict['cols'])+1
+                                         )
+
+
+        # store result as .cdf file
+        data['timestamp'] = pd.to_datetime(data['timestamp'])  # parses the ISO strings
+        epoch_pydt = data['timestamp'].dt.to_pydatetime()  # -> array of datetime.datetime
+        epoch_pydt = np.asarray(epoch_pydt, dtype=object)  # plain object ndarray
+
+        data_dict_output = {
+            'Epoch':[epoch_pydt,{'VAR_TYPE':'support_data'}],
+            f'{instr}_allWords': [data['value'].to_numpy(),{'DEPEND_0':'Epoch','VAR_TYPE':'data'}],
+            'Major_frame_idx':[data['major_frame_index'].to_numpy(),{'DEPEND_0':'Epoch','VAR_TYPE':'support_data'}],
+            'Minor_frame_idx': [data['row'].to_numpy(), {'DEPEND_0': 'Epoch', 'VAR_TYPE': 'support_data'}],
+        }
+
+        outputFilePath = f'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/{instr}/{FILE.replace(".tad","")}_{instr}.cdf'
+        stl.outputDataDict(outputPath=outputFilePath,
+                           data_dict=data_dict_output)
+        stl.Done(start_time)
