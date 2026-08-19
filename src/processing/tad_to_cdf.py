@@ -54,9 +54,10 @@ start_time = time.time()
 
 # --- Pathing ---------------------------------------------------------------
 DIR = 'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/tad/'
-SOURCE = 'simulator/'
-# FILE = '52012_Full_Turn_On_8-15-26_Card1.tad'
-FILE = '20260814_00_OCHRE_CuEDI_debug.tad'
+# SOURCE = 'simulator/'
+SOURCE = 'payload/'
+FILE = '52012_Full_Turn_On_8-15-26_Card1.tad'
+# FILE = '20260814_00_OCHRE_CuEDI_debug.tad'
 TAD_PATH = DIR + SOURCE+ FILE
 
 # --- Datastream timing constants -------------------------------------------
