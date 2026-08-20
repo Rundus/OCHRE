@@ -50,8 +50,6 @@ import spaceToolsLib as stl
 import time
 start_time = time.time()
 
-
-
 # --- Pathing ---------------------------------------------------------------
 DIR = 'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/tad/'
 # SOURCE = 'simulator/'
@@ -168,7 +166,6 @@ def decode_status_word(word2: int) -> dict:
         "tc_reader_status": bool((word2 >> 15) & 1),
     }
 
-
 def parse_file_header(data: bytes):
     """Parse the 328-byte outer Dewesoft-style header. Returns the raw date
     string found in it (treat with suspicion -- see module docstring)."""
@@ -176,7 +173,6 @@ def parse_file_header(data: bytes):
         raise ValueError("File is smaller than the expected 328-byte header.")
     date_str = data[22:44].split(b"\x00")[0].decode("ascii", errors="replace")
     return {"date_str_raw": date_str}
-
 
 def parse_tad_file(path, year: int = DEFAULT_YEAR,
                     sync_word: bytes = DEFAULT_SYNC_WORD,
