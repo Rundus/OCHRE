@@ -42,28 +42,29 @@ USAGE
     df = parse_tad_file("myfile.tad", year=2026)
     df.to_parquet("myfile.parquet")
 """
-
+import os.path
 import struct
 import numpy as np
 import pandas as pd
 import spaceToolsLib as stl
 import time
+import glob
+from src.processing.processing_classes import ProcessingClass
 start_time = time.time()
 
 # --- Pathing ---------------------------------------------------------------
-DIR = 'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/tad/'
-# SOURCE = 'simulator/'
-SOURCE = 'payload/'
-FILE = '52012_Full_Turn_On_8-15-26_Card1.tad'
-# FILE = '20260814_00_OCHRE_CuEDI_debug.tad'
-TAD_PATH = DIR + SOURCE+ FILE
+justPrintFileNames = False
+outputData = True
+wFile = 4
+wInstrs = ['CuEDI'] # Which instruments to strip the data from
+
 
 # --- Datastream timing constants -------------------------------------------
 # TODO: set these to the real values for this datastream. They control how
 # each individual data word within a minor frame gets its own timestamp,
 # offset from the minor frame header's decoded time (see
 # `word_time_offset_sec` / `extract_instrument_stream` below).
-BIT_RATE_BPS = 4_000_000     # datastream bit rate, in bits per second
+BIT_RATE_BPS = 4_800_000     # datastream bit rate, in bits per second
 WORD_BIT_SIZE_BITS = 16      # bits per data word (matches the 16-bit word
                               # split used throughout this parser)
 TIME_PER_WORD_SEC = WORD_BIT_SIZE_BITS / BIT_RATE_BPS
@@ -75,19 +76,7 @@ DEFAULT_SYNC_WORD = bytes.fromhex("40286bfe")  # little-endian for 0xFE6B2840
 DEFAULT_YEAR = 2026
 
 # --- Datastream Instrument Word Definitions --------------------------------
-instr_dict = {
-    'CuEDI':{'rows':None,'cols':[10,11,21,22,36,37,52,53,54,70,71,81,82,96,97,112,113]},
-    # 'LP':{'rows':None,'cols':[6,7,19,20,34,35,50,51,66,67,79,80,94,95,110,111]},
-    # 'SCM':{'rows':None,'cols':np.array([1,2,3,
-    #                                     16,17,18,
-    #                                     31,32,33,
-    #                                     46,47,48,
-    #                                     61,62,63,
-    #                                     76,77,78,
-    #                                     91,92,93,
-    #                                     106,107,108])},
-    # 'SFID':{'rows':None,'cols':np.array([1,16,31,46,61,76,91,106])}
-}
+
 
 
 def detect_record_length(data: bytes, sync_word: bytes,
@@ -561,55 +550,72 @@ def extract_instrument_stream(major_frames: np.ndarray,
 
 
 if __name__ == "__main__":
-    import sys
 
-    tad_path = TAD_PATH
-    yr = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_YEAR
+    files = glob.glob(ProcessingClass.DIR +'/tad/' + ProcessingClass.SOURCE + '/*.tad*')
 
-    df = parse_tad_file(tad_path, year=yr) # run the main function to get the data
-    major_frames = build_major_frames(df)
-    major_frame_ts = build_major_frame_timestamps(df)  # (N, 10) array, aligned
-                                                         # with major_frames --
-                                                         # NOT the same as
-                                                         # df['timestamp']
+    if justPrintFileNames:
+        if len(files) == 0:
+            raise Exception(f"There are no files in the directory ({ProcessingClass.DIR+ProcessingClass.SOURCE})")
+        else:
+            for idx, thing in enumerate(files):
+                print(f'[{idx}] {os.path.basename(thing)}')
+    else:
 
-    # print out some status words
-    print(f"\nParsed {len(df)} minor frames from {tad_path}")
-    print(f"Record length: {df.attrs['rec_len']} bytes  "
-          f"| Data words/frame: {df.attrs['n_data_words16']}  "
-          f"| Sync word: {df.attrs['sync_word']}")
-    print(f"Header date string (unreliable, see docstring): "
-          f"{df.attrs['header_date_str_raw']!r}")
-    print(f"Sync errors: {(~df['sync_ok']).sum()} / {len(df)}")
-    print(f"Time range: {df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}")
-    # print(df.drop(columns=["data"]).head())
-    print(f"\nMajor frames array shape: {major_frames.shape}  dtype={major_frames.dtype}")
+        import sys
+        tad_path = files[wFile]
+        yr = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_YEAR
 
-    # --- Rip out individual instrument data ---
-    for instr,words_dict in instr_dict.items():
+        df = parse_tad_file(tad_path, year=yr) # run the main function to get the data
+        major_frames = build_major_frames(df)
+        major_frame_ts = build_major_frame_timestamps(df)  # (N, 10) array, aligned
+                                                             # with major_frames --
+                                                             # NOT the same as
+                                                             # df['timestamp']
 
-        stl.prgMsg(f'Extracting {instr} data')
-
-        data = extract_instrument_stream(major_frames=major_frames,
-                                  major_frame_timestamps=major_frame_ts,
-                                  rows=words_dict['rows'],
-                                  column=np.array(words_dict['cols'])+1
-                                         )
+        instr_dict = {instr: ProcessingClass.instr_dict[instr] for instr in wInstrs}
 
 
-        # store result as .cdf file
-        data['timestamp'] = pd.to_datetime(data['timestamp'])  # parses the ISO strings
-        epoch_pydt = data['timestamp'].dt.to_pydatetime()  # -> array of datetime.datetime
-        epoch_pydt = np.asarray(epoch_pydt, dtype=object)  # plain object ndarray
+        # print out some status words
+        print(f"\nParsed {len(df)} minor frames from {tad_path}")
+        print(f"Record length: {df.attrs['rec_len']} bytes  "
+              f"| Data words/frame: {df.attrs['n_data_words16']}  "
+              f"| Sync word: {df.attrs['sync_word']}")
+        print(f"Header date string (unreliable, see docstring): "
+              f"{df.attrs['header_date_str_raw']!r}")
+        print(f"Sync errors: {(~df['sync_ok']).sum()} / {len(df)}")
+        print(f"Time range: {df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}")
+        # print(df.drop(columns=["data"]).head())
+        print(f"\nMajor frames array shape: {major_frames.shape}  dtype={major_frames.dtype}")
 
-        data_dict_output = {
-            'Epoch':[epoch_pydt,{'VAR_TYPE':'support_data'}],
-            f'{instr}_allWords': [data['value'].to_numpy(),{'DEPEND_0':'Epoch','VAR_TYPE':'data'}],
-            'Major_frame_idx':[data['major_frame_index'].to_numpy(),{'DEPEND_0':'Epoch','VAR_TYPE':'support_data'}],
-            'Minor_frame_idx': [data['row'].to_numpy(), {'DEPEND_0': 'Epoch', 'VAR_TYPE': 'support_data'}],
-        }
+        # --- Rip out individual instrument data ---
+        for instr,words_dict in instr_dict.items():
 
-        outputFilePath = f'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/{instr}/{FILE.replace(".tad","")}_{instr}.cdf'
-        stl.outputDataDict(outputPath=outputFilePath,
-                           data_dict=data_dict_output)
-        stl.Done(start_time)
+            stl.prgMsg(f'Extracting {instr} data')
+
+            # --- get the raw instrument data ---
+            data = extract_instrument_stream(major_frames=major_frames,
+                                      major_frame_timestamps=major_frame_ts,
+                                      rows=words_dict['rows'],
+                                      column=np.array(words_dict['cols'])+1
+                                             )
+
+            # store result as .cdf file
+            data['timestamp'] = pd.to_datetime(data['timestamp'])  # parses the ISO strings
+            epoch_pydt = data['timestamp'].dt.to_pydatetime()  # -> array of datetime.datetime
+            epoch_pydt = np.asarray(epoch_pydt, dtype=object)  # plain object ndarray
+
+
+            data_dict_output = {
+                'epoch':[epoch_pydt,{'VAR_TYPE':'support_data'}],
+                f'{instr}_all_words': [data['value'].to_numpy(),{'DEPEND_0':'epoch','VAR_TYPE':'data'}] ,
+                'major_frame_idx':[data['major_frame_index'].to_numpy(),{'DEPEND_0':'epoch','VAR_TYPE':'support_data'}],
+                'minor_frame_idx': [data['row'].to_numpy(), {'DEPEND_0': 'epoch', 'VAR_TYPE': 'support_data'}],
+            }
+
+            file_tag = os.path.basename(tad_path).replace(".tad","").replace('OCHRE_','')
+            file_name = f'OCHRE_52012_{instr}_l0_{file_tag}.cdf'
+            outputFilePath = f'C:/Users/cfelt/OneDrive - University of Iowa/rockets/OCHRE/data/INT/L0/{instr}/{file_name}'
+            if outputData:
+                stl.outputDataDict(outputPath=outputFilePath,
+                                   data_dict=data_dict_output)
+            stl.Done(start_time)
